@@ -12,7 +12,7 @@ const Color = enum(u32) {
     red = 0x00FF0000,
     green = 0x0000FF00,
     yellow = 0x00FFFF00,
-    gray = 0x161616,
+    black = 0x00000000,
 };
 
 const Mode = enum {
@@ -34,8 +34,8 @@ const JustDraw = struct {
     drawing: bool = false,
     deleting: bool = false,
     last_pos: ?Point = null,
-    size: usize = 5, // diameter
-    background_color: Color = .gray,
+    size: usize = 2, // diameter
+    background_color: Color = .black,
     mode: Mode = .normal,
     shape_init: ?Point = null,
     dirty: bool = true,
