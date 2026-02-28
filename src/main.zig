@@ -15,6 +15,12 @@ const Color = enum(u32) {
     gray = 0x1E1E1E,
 };
 
+const Mode = enum {
+    normal,
+    square,
+    line,
+};
+
 const Point = struct {
     x: i32,
     y: i32,
@@ -23,11 +29,14 @@ const Point = struct {
 const JustDraw = struct {
     color: Color,
     buffer: [WIDTH * HEIGHT]u32 = undefined,
+    overlay_buffer: [WIDTH * HEIGHT]u32 = undefined,
     drawing: bool = false,
     deleting: bool = false,
     last_pos: ?Point = null,
     size: usize = 5, // diameter
     background_color: Color = .gray,
+    mode: Mode = .normal,
+    shape_init: ?Point = null,
 
     fn init() JustDraw {
         return .{ .color = .white };
@@ -60,21 +69,28 @@ const JustDraw = struct {
         const end = @min(x1, WIDTH - 1);
         var x = start;
 
-        // If deleting override the color
+        // If deleting, override the color
         const color = if (self.deleting) self.background_color else self.color;
+        const buffer = if (self.mode == .normal) &self.buffer else &self.overlay_buffer;
         while (x <= end) : (x += 1) {
-            self.buffer[@intCast(y * WIDTH + x)] = @intFromEnum(color);
+            buffer[@intCast(y * WIDTH + x)] = @intFromEnum(color);
         }
     }
 
     // Draw a filled rectangle
     fn draw_rect(self: *JustDraw, x: i32, y: i32, w: i32, h: i32) void {
+        if (w < 0 or h < 0) return;
+
         var py = y;
+        var px = x;
+
+        while (px < x + w) : (px += 1) {
+            self.set_point(px, py);
+            self.set_point(px, py + h);
+        }
         while (py < y + h) : (py += 1) {
-            var px = x;
-            while (px < x + w) : (px += 1) {
-                self.set_point(px, py);
-            }
+            self.set_point(px - w, py);
+            self.set_point(px, py);
         }
     }
 
@@ -112,38 +128,61 @@ const JustDraw = struct {
     }
 };
 
-pub fn main() void {
-    // Create window
-    const window = c.mfb_open("draw", WIDTH, HEIGHT);
+pub fn main() !void {
+    const window = c.mfb_open("JUST DRAW", WIDTH, HEIGHT);
     if (window == null) return;
     defer c.mfb_close(window);
 
-    var jd = JustDraw.init();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
-    c.mfb_set_user_data(window, &jd);
+    const jd = try allocator.create(JustDraw);
+    defer allocator.destroy(jd);
+    jd.* = JustDraw.init();
+
+    c.mfb_set_user_data(window, jd);
 
     jd.redraw_canvas();
     c.mfb_set_keyboard_callback(window, keyboard_callback);
     c.mfb_set_mouse_move_callback(window, mouse_move_callback);
     c.mfb_set_mouse_button_callback(window, mouse_button_callback);
 
+    const display = try allocator.alloc(u32, WIDTH * HEIGHT);
+    defer allocator.free(display);
+
     // Main loop
     while (c.mfb_wait_sync(window)) {
-        // Copy buffer to display buffer
-        var display: [WIDTH * HEIGHT]u32 = jd.buffer;
+        @memcpy(display, &jd.buffer);
 
-        // Draw cursor on display buffer only
         if (jd.last_pos) |pos| {
-            draw_cursor(&display, pos.x, pos.y, jd.size, @intFromEnum(jd.color));
+            draw_cursor(display, pos.x, pos.y, jd.size, @intFromEnum(jd.color));
+
+            if (jd.shape_init) |init| {
+                jd.overlay_buffer = jd.buffer;
+                switch (jd.mode) {
+                    .square => {
+                        const init_x = if (init.x < pos.x) init.x else pos.x;
+                        const init_y = if (init.y < pos.y) init.y else pos.y;
+
+                        const width: i32 = @intCast(@abs(pos.x - init.x));
+                        const height: i32 = @intCast(@abs(pos.y - init.y));
+
+                        jd.draw_rect(init_x, init_y, width, height);
+                    },
+                    .line => jd.draw_line(init.x, init.y, pos.x, pos.y),
+                    else => {},
+                }
+                if (c.mfb_update(window, jd.overlay_buffer[0..].ptr) != c.STATE_OK) break;
+                continue;
+            }
         }
 
-        const state = c.mfb_update(window, &display);
-
-        if (state != c.STATE_OK) break;
+        if (c.mfb_update(window, display.ptr) != c.STATE_OK) break;
     }
 }
 
-fn draw_cursor(buffer: *[WIDTH * HEIGHT]u32, cx: i32, cy: i32, size: usize, color: u32) void {
+fn draw_cursor(buffer: []u32, cx: i32, cy: i32, size: usize, color: u32) void {
     const r: i32 = @intCast(size / 2);
     var x: i32 = 0;
     var y: i32 = r;
@@ -168,7 +207,7 @@ fn draw_cursor(buffer: *[WIDTH * HEIGHT]u32, cx: i32, cy: i32, size: usize, colo
     }
 }
 
-fn put_pixel(buffer: *[WIDTH * HEIGHT]u32, x: i32, y: i32, color: u32) void {
+fn put_pixel(buffer: []u32, x: i32, y: i32, color: u32) void {
     if (x < 0 or y < 0 or x >= WIDTH or y >= HEIGHT) return;
     buffer[@intCast(y * WIDTH + x)] = color;
 }
@@ -188,7 +227,7 @@ fn keyboard_callback(window: ?*c.mfb_window, key: c.mfb_key, _: c.mfb_key_mod, i
         '=' => jd.size = @min(MAX_POINT_SIZE, jd.size + 2), // Same position as `+`
         '-' => jd.size = @max(MIN_POINT_SIZE, jd.size - 2),
         c.KB_KEY_BACKSPACE => jd.redraw_canvas(),
-        else => std.debug.print("{}", .{key}),
+        else => {},
     }
 }
 
@@ -211,12 +250,37 @@ fn mouse_move_callback(window: ?*c.mfb_window, x: i32, y: i32) callconv(.c) void
     jd.set_point(x, y);
 }
 
-fn mouse_button_callback(window: ?*c.mfb_window, button: c.mfb_mouse_button, _: c.mfb_key_mod, is_pressed: bool) callconv(.c) void {
+fn mouse_button_callback(window: ?*c.mfb_window, button: c.mfb_mouse_button, mod: c.mfb_key_mod, is_pressed: bool) callconv(.c) void {
     const pointer = c.mfb_get_user_data(window) orelse return;
     var jd: *JustDraw = @ptrCast(@alignCast(pointer));
 
     switch (button) {
         c.MOUSE_LEFT => {
+            switch (mod) {
+                // With shift draw a square
+                c.KB_MOD_SUPER => {
+                    if (is_pressed) {
+                        jd.mode = .square;
+                        jd.shape_init = jd.last_pos;
+                    } else {
+                        jd.buffer = jd.overlay_buffer; // commit shape
+                        jd.mode = .normal;
+                        jd.shape_init = null;
+                    }
+                },
+                c.KB_MOD_SHIFT => {
+                    if (is_pressed) {
+                        jd.mode = .line;
+                        jd.shape_init = jd.last_pos;
+                    } else {
+                        jd.buffer = jd.overlay_buffer; // commit shape
+                        jd.mode = .normal;
+                        jd.shape_init = null;
+                    }
+                },
+                else => {},
+            }
+
             jd.drawing = is_pressed;
             if (is_pressed) {
                 if (jd.last_pos) |last_pos| {
