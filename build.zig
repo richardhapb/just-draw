@@ -26,6 +26,7 @@ pub fn build(b: *std.Build) void {
             "minifb/src/MiniFB_internal.c",
             "minifb/src/MiniFB_timer.c",
         },
+        .flags = &.{"-DUSE_METAL_API"},
     });
 
     // macOS-specific sources (Objective-C) - no ARC, minifb uses manual retain/release
@@ -36,6 +37,7 @@ pub fn build(b: *std.Build) void {
             "minifb/src/macosx/OSXViewDelegate.m",
             "minifb/src/macosx/OSXWindow.m",
         },
+        .flags = &.{"-DUSE_METAL_API"},
     });
 
     minifb_mod.linkFramework("Cocoa", .{});
