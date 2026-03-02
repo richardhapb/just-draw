@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const os_tag = target.result.os.tag;
 
     // --- Build minifb as a static library ---
     const minifb_mod = b.createModule(.{
@@ -26,24 +27,31 @@ pub fn build(b: *std.Build) void {
             "minifb/src/MiniFB_internal.c",
             "minifb/src/MiniFB_timer.c",
         },
-        .flags = &.{"-DUSE_METAL_API"},
     });
 
-    // macOS-specific sources (Objective-C) - no ARC, minifb uses manual retain/release
-    minifb_mod.addCSourceFiles(.{
-        .files = &.{
-            "minifb/src/macosx/MacMiniFB.m",
-            "minifb/src/macosx/OSXView.m",
-            "minifb/src/macosx/OSXViewDelegate.m",
-            "minifb/src/macosx/OSXWindow.m",
+    switch (os_tag) {
+        .macos => {
+            // Objective-C files use manual retain/release; do not enable ARC.
+            minifb_mod.addCSourceFiles(.{
+                .files = &.{
+                    "minifb/src/macosx/MacMiniFB.m",
+                    "minifb/src/macosx/OSXView.m",
+                    "minifb/src/macosx/OSXViewDelegate.m",
+                    "minifb/src/macosx/OSXWindow.m",
+                },
+                .flags = &.{"-DUSE_METAL_API"},
+            });
         },
-        .flags = &.{"-DUSE_METAL_API"},
-    });
-
-    minifb_mod.linkFramework("Cocoa", .{});
-    minifb_mod.linkFramework("Metal", .{});
-    minifb_mod.linkFramework("MetalKit", .{});
-    minifb_mod.linkFramework("QuartzCore", .{});
+        .linux => {
+            minifb_mod.addCSourceFiles(.{
+                .files = &.{
+                    "minifb/src/MiniFB_linux.c",
+                    "minifb/src/x11/X11MiniFB.c",
+                },
+            });
+        },
+        else => @panic("unsupported target OS for just_draw"),
+    }
 
     // --- Zig bindings via translate-c ---
     const translate_c = b.addTranslateC(.{
@@ -64,6 +72,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     mod.addImport("c", c_module);
+
+    switch (os_tag) {
+        .macos => {
+            mod.linkFramework("Cocoa", .{});
+            mod.linkFramework("Metal", .{});
+            mod.linkFramework("MetalKit", .{});
+            mod.linkFramework("QuartzCore", .{});
+        },
+        .linux => {
+            mod.linkSystemLibrary("X11", .{});
+            mod.linkSystemLibrary("xkbcommon", .{});
+        },
+        else => unreachable,
+    }
 
     const exe = b.addExecutable(.{
         .name = "just_draw",

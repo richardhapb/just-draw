@@ -180,6 +180,8 @@ pub fn main() !void {
     if (window == null) return;
     defer c.mfb_close(window);
 
+    c.mfb_show_cursor(window, false);
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const gpalloc = gpa.allocator();
