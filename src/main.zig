@@ -55,17 +55,17 @@ const JustDraw = struct {
         };
     }
 
-    fn set_point(self: *JustDraw, cx: i32, cy: i32) void {
+    fn setPoint(self: *JustDraw, cx: i32, cy: i32) void {
         const r: i32 = @intCast(self.size / 2);
         var x: i32 = 0;
         var y: i32 = r;
         var d: i32 = 3 - 2 * r;
 
         while (x <= y) : (x += 1) {
-            self.hline(cx - x, cx + x, cy + y);
-            self.hline(cx - x, cx + x, cy - y);
-            self.hline(cx - y, cx + y, cy + x);
-            self.hline(cx - y, cx + y, cy - x);
+            self.hLine(cx - x, cx + x, cy + y);
+            self.hLine(cx - x, cx + x, cy - y);
+            self.hLine(cx - y, cx + y, cy + x);
+            self.hLine(cx - y, cx + y, cy - x);
 
             if (d < 0) {
                 d += 4 * x + 6;
@@ -76,7 +76,7 @@ const JustDraw = struct {
         }
     }
 
-    fn hline(self: *JustDraw, x0: i32, x1: i32, y: i32) void {
+    fn hLine(self: *JustDraw, x0: i32, x1: i32, y: i32) void {
         if (y < 0 or y >= HEIGHT) return;
         const start = @max(x0, 0);
         const end = @min(x1, WIDTH - 1);
@@ -92,24 +92,24 @@ const JustDraw = struct {
     }
 
     // Draw a filled rectangle
-    fn draw_rect(self: *JustDraw, x: i32, y: i32, w: i32, h: i32) void {
+    fn drawRect(self: *JustDraw, x: i32, y: i32, w: i32, h: i32) void {
         if (w < 0 or h < 0) return;
 
         var py = y;
         var px = x;
 
         while (px < x + w) : (px += 1) {
-            self.set_point(px, py);
-            self.set_point(px, py + h);
+            self.setPoint(px, py);
+            self.setPoint(px, py + h);
         }
         while (py < y + h) : (py += 1) {
-            self.set_point(px - w, py);
-            self.set_point(px, py);
+            self.setPoint(px - w, py);
+            self.setPoint(px, py);
         }
     }
 
     // Draw a line using Bresenham's algorithm
-    fn draw_line(self: *JustDraw, x0: i32, y0: i32, x1: i32, y1: i32) void {
+    fn drawLine(self: *JustDraw, x0: i32, y0: i32, x1: i32, y1: i32) void {
         var x = x0;
         var y = y0;
 
@@ -120,7 +120,7 @@ const JustDraw = struct {
         var err = dx + dy;
 
         while (true) {
-            self.set_point(x, y);
+            self.setPoint(x, y);
             if (x == x1 and y == y1) break;
             const e2 = 2 * err;
             if (e2 >= dy) {
@@ -134,7 +134,7 @@ const JustDraw = struct {
         }
     }
 
-    fn redraw_canvas(self: *JustDraw) void {
+    fn redrawCanvas(self: *JustDraw) void {
         // Clear to background color
         for (self.buffer) |*pixel| {
             pixel.* = @intFromEnum(self.background_color);
@@ -142,7 +142,7 @@ const JustDraw = struct {
         self.dirty = true;
     }
 
-    fn to_canvas(jd: *JustDraw, x: i32, y: i32) Point {
+    fn toCanvas(jd: *JustDraw, x: i32, y: i32) Point {
         // Compute best-fit viewport manually
         const win_w: i32 = @intCast(jd.win_width);
         const win_h: i32 = @intCast(jd.win_height);
@@ -161,15 +161,15 @@ const JustDraw = struct {
         };
     }
 
-    fn update_display(self: *JustDraw) void {
+    fn updateDisplay(self: *JustDraw) void {
         @memcpy(self.display, self.buffer);
     }
 
-    fn update_overlay(self: *JustDraw) void {
+    fn updateOverlay(self: *JustDraw) void {
         @memcpy(self.overlay_buffer, self.buffer);
     }
 
-    fn commit_overlay(self: *JustDraw) void {
+    fn commitOverlay(self: *JustDraw) void {
         @memcpy(self.buffer, self.overlay_buffer);
         self.dirty = true;
     }
@@ -194,11 +194,11 @@ pub fn main() !void {
 
     c.mfb_set_user_data(window, jd);
 
-    jd.redraw_canvas();
-    c.mfb_set_keyboard_callback(window, keyboard_callback);
-    c.mfb_set_mouse_move_callback(window, mouse_move_callback);
-    c.mfb_set_mouse_button_callback(window, mouse_button_callback);
-    c.mfb_set_resize_callback(window, resize_callback);
+    jd.redrawCanvas();
+    c.mfb_set_keyboard_callback(window, keyboardCallback);
+    c.mfb_set_mouse_move_callback(window, mouseMoveCallback);
+    c.mfb_set_mouse_button_callback(window, mouseButtonCallback);
+    c.mfb_set_resize_callback(window, resizeCallback);
 
     // Initial render
     _ = c.mfb_update(window, jd.display.ptr);
@@ -221,12 +221,12 @@ pub fn main() !void {
         // Only redraw if something changed
         if (needs_update) {
             if (jd.last_pos) |pos| {
-                jd.update_display();
-                draw_cursor(jd.display, pos.x, pos.y, jd.size, @intFromEnum(jd.color));
+                jd.updateDisplay();
+                drawCursor(jd.display, pos.x, pos.y, jd.size, @intFromEnum(jd.color));
                 jd.prev_pos = pos;
 
                 if (jd.shape_init) |init| {
-                    jd.update_overlay();
+                    jd.updateOverlay();
                     switch (jd.mode) {
                         .square => {
                             const init_x = if (init.x < pos.x) init.x else pos.x;
@@ -235,9 +235,9 @@ pub fn main() !void {
                             const width: i32 = @intCast(@abs(pos.x - init.x));
                             const height: i32 = @intCast(@abs(pos.y - init.y));
 
-                            jd.draw_rect(init_x, init_y, width, height);
+                            jd.drawRect(init_x, init_y, width, height);
                         },
-                        .line => jd.draw_line(init.x, init.y, pos.x, pos.y),
+                        .line => jd.drawLine(init.x, init.y, pos.x, pos.y),
                         else => {},
                     }
                     jd.dirty = false;
@@ -251,21 +251,21 @@ pub fn main() !void {
     }
 }
 
-fn draw_cursor(buffer: []u32, cx: i32, cy: i32, size: usize, color: u32) void {
+fn drawCursor(buffer: []u32, cx: i32, cy: i32, size: usize, color: u32) void {
     const r: i32 = @intCast(size / 2);
     var x: i32 = 0;
     var y: i32 = r;
     var d: i32 = 3 - 2 * r;
 
     while (x <= y) : (x += 1) {
-        put_pixel(buffer, cx + x, cy + y, color);
-        put_pixel(buffer, cx - x, cy + y, color);
-        put_pixel(buffer, cx + x, cy - y, color);
-        put_pixel(buffer, cx - x, cy - y, color);
-        put_pixel(buffer, cx + y, cy + x, color);
-        put_pixel(buffer, cx - y, cy + x, color);
-        put_pixel(buffer, cx + y, cy - x, color);
-        put_pixel(buffer, cx - y, cy - x, color);
+        putPixel(buffer, cx + x, cy + y, color);
+        putPixel(buffer, cx - x, cy + y, color);
+        putPixel(buffer, cx + x, cy - y, color);
+        putPixel(buffer, cx - x, cy - y, color);
+        putPixel(buffer, cx + y, cy + x, color);
+        putPixel(buffer, cx - y, cy + x, color);
+        putPixel(buffer, cx + y, cy - x, color);
+        putPixel(buffer, cx - y, cy - x, color);
 
         if (d < 0) {
             d += 4 * x + 6;
@@ -276,12 +276,12 @@ fn draw_cursor(buffer: []u32, cx: i32, cy: i32, size: usize, color: u32) void {
     }
 }
 
-fn put_pixel(buffer: []u32, x: i32, y: i32, color: u32) void {
+fn putPixel(buffer: []u32, x: i32, y: i32, color: u32) void {
     if (x < 0 or y < 0 or x >= WIDTH or y >= HEIGHT) return;
     buffer[@intCast(y * WIDTH + x)] = color;
 }
 
-fn keyboard_callback(window: ?*c.mfb_window, key: c.mfb_key, _: c.mfb_key_mod, is_pressed: bool) callconv(.c) void {
+fn keyboardCallback(window: ?*c.mfb_window, key: c.mfb_key, _: c.mfb_key_mod, is_pressed: bool) callconv(.c) void {
     if (!is_pressed) return;
 
     const pointer = c.mfb_get_user_data(window) orelse return;
@@ -295,7 +295,7 @@ fn keyboard_callback(window: ?*c.mfb_window, key: c.mfb_key, _: c.mfb_key_mod, i
         '0' => jd.color = .white,
         '=' => jd.size = @min(MAX_POINT_SIZE, jd.size + 2), // Same position as `+`
         '-' => jd.size = @max(MIN_POINT_SIZE, jd.size - 2),
-        c.KB_KEY_BACKSPACE => jd.redraw_canvas(),
+        c.KB_KEY_BACKSPACE => jd.redrawCanvas(),
         else => return,
     }
 
@@ -303,11 +303,11 @@ fn keyboard_callback(window: ?*c.mfb_window, key: c.mfb_key, _: c.mfb_key_mod, i
     jd.dirty = true;
 }
 
-fn mouse_move_callback(window: ?*c.mfb_window, x: i32, y: i32) callconv(.c) void {
+fn mouseMoveCallback(window: ?*c.mfb_window, x: i32, y: i32) callconv(.c) void {
     const pointer = c.mfb_get_user_data(window) orelse return;
     var jd: *JustDraw = @ptrCast(@alignCast(pointer));
 
-    const pos = jd.to_canvas(x, y);
+    const pos = jd.toCanvas(x, y);
 
     if (!jd.drawing and !jd.deleting) {
         // Just update the position to handle it on next click
@@ -316,15 +316,15 @@ fn mouse_move_callback(window: ?*c.mfb_window, x: i32, y: i32) callconv(.c) void
     }
 
     if (jd.last_pos) |last_pos| {
-        jd.draw_line(last_pos.x, last_pos.y, pos.x, pos.y);
+        jd.drawLine(last_pos.x, last_pos.y, pos.x, pos.y);
     }
 
     jd.last_pos = pos;
 
-    jd.set_point(pos.x, pos.y);
+    jd.setPoint(pos.x, pos.y);
 }
 
-fn mouse_button_callback(window: ?*c.mfb_window, button: c.mfb_mouse_button, mod: c.mfb_key_mod, is_pressed: bool) callconv(.c) void {
+fn mouseButtonCallback(window: ?*c.mfb_window, button: c.mfb_mouse_button, mod: c.mfb_key_mod, is_pressed: bool) callconv(.c) void {
     const pointer = c.mfb_get_user_data(window) orelse return;
     var jd: *JustDraw = @ptrCast(@alignCast(pointer));
 
@@ -337,7 +337,7 @@ fn mouse_button_callback(window: ?*c.mfb_window, button: c.mfb_mouse_button, mod
                         jd.mode = .square;
                         jd.shape_init = jd.last_pos;
                     } else {
-                        jd.commit_overlay();
+                        jd.commitOverlay();
                         jd.mode = .normal;
                         jd.shape_init = null;
                     }
@@ -347,7 +347,7 @@ fn mouse_button_callback(window: ?*c.mfb_window, button: c.mfb_mouse_button, mod
                         jd.mode = .line;
                         jd.shape_init = jd.last_pos;
                     } else {
-                        jd.commit_overlay();
+                        jd.commitOverlay();
                         jd.mode = .normal;
                         jd.shape_init = null;
                     }
@@ -359,7 +359,7 @@ fn mouse_button_callback(window: ?*c.mfb_window, button: c.mfb_mouse_button, mod
             if (is_pressed) {
                 if (jd.last_pos) |last_pos| {
                     // First pixel, this handles the `click` alone event without movement
-                    jd.set_point(last_pos.x, last_pos.y);
+                    jd.setPoint(last_pos.x, last_pos.y);
                 }
             } else jd.last_pos = null; // Restart state to avoid join lines when click again
         },
@@ -369,7 +369,7 @@ fn mouse_button_callback(window: ?*c.mfb_window, button: c.mfb_mouse_button, mod
             if (is_pressed) {
                 if (jd.last_pos) |last_pos| {
                     // First pixel, this handles the `click` alone event without movement
-                    jd.set_point(last_pos.x, last_pos.y);
+                    jd.setPoint(last_pos.x, last_pos.y);
                 }
             } else jd.last_pos = null; // Restart state to avoid join lines when click again
         },
@@ -377,7 +377,7 @@ fn mouse_button_callback(window: ?*c.mfb_window, button: c.mfb_mouse_button, mod
     }
 }
 
-fn resize_callback(window: ?*c.mfb_window, width: i32, height: i32) callconv(.c) void {
+fn resizeCallback(window: ?*c.mfb_window, width: i32, height: i32) callconv(.c) void {
     const pointer = c.mfb_get_user_data(window) orelse return;
     const jd: *JustDraw = @ptrCast(@alignCast(pointer));
     jd.win_width = @intCast(width);
