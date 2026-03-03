@@ -201,6 +201,7 @@ pub fn main() !void {
     c.mfb_set_mouse_move_callback(window, mouseMoveCallback);
     c.mfb_set_mouse_button_callback(window, mouseButtonCallback);
     c.mfb_set_resize_callback(window, resizeCallback);
+    c.mfb_set_active_callback(window, activeCallback);
 
     // Initial render
     _ = c.mfb_update(window, jd.display.ptr);
@@ -384,4 +385,12 @@ fn resizeCallback(window: ?*c.mfb_window, width: i32, height: i32) callconv(.c) 
     const jd: *JustDraw = @ptrCast(@alignCast(pointer));
     jd.win_width = @intCast(width);
     jd.win_height = @intCast(height);
+}
+
+fn activeCallback(window: ?*c.mfb_window, is_active: bool) callconv(.c) void {
+    const pointer = c.mfb_get_user_data(window) orelse return;
+    const jd: *JustDraw = @ptrCast(@alignCast(pointer));
+
+    // update when it is focused
+    jd.dirty = is_active;
 }
