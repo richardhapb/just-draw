@@ -1,5 +1,30 @@
 const std = @import("std");
 
+fn configureHidApiIncludes(translate_c: *std.Build.Step.TranslateC, os_tag: std.Target.Os.Tag) void {
+    translate_c.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
+    translate_c.addSystemIncludePath(.{ .cwd_relative = "/usr/local/include" });
+
+    switch (os_tag) {
+        .macos => {
+            translate_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+        },
+        .linux => {},
+        else => @panic("unsupported target OS for hidapi"),
+    }
+}
+
+fn configureHidApiLink(mod: *std.Build.Module, os_tag: std.Target.Os.Tag) void {
+    switch (os_tag) {
+        .macos => {
+            mod.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
+            mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+            mod.linkSystemLibrary("hidapi", .{});
+        },
+        .linux => mod.linkSystemLibrary("hidapi-hidraw", .{}),
+        else => @panic("unsupported target OS for hidapi"),
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -20,20 +45,14 @@ pub fn build(b: *std.Build) void {
         .root_module = minifb_mod,
     });
 
-    // Core minifb sources
-    minifb_mod.addCSourceFiles(.{
-        .files = &.{
-            "minifb/src/MiniFB_common.c",
-            "minifb/src/MiniFB_internal.c",
-            "minifb/src/MiniFB_timer.c",
-        },
-    });
-
     switch (os_tag) {
         .macos => {
-            // Objective-C files use manual retain/release; do not enable ARC.
+            // Core files and Objective-C files use manual retain/release; do not enable ARC.
             minifb_mod.addCSourceFiles(.{
                 .files = &.{
+                    "minifb/src/MiniFB_common.c",
+                    "minifb/src/MiniFB_internal.c",
+                    "minifb/src/MiniFB_timer.c",
                     "minifb/src/macosx/MacMiniFB.m",
                     "minifb/src/macosx/OSXView.m",
                     "minifb/src/macosx/OSXViewDelegate.m",
@@ -45,6 +64,9 @@ pub fn build(b: *std.Build) void {
         .linux => {
             minifb_mod.addCSourceFiles(.{
                 .files = &.{
+                    "minifb/src/MiniFB_common.c",
+                    "minifb/src/MiniFB_internal.c",
+                    "minifb/src/MiniFB_timer.c",
                     "minifb/src/MiniFB_linux.c",
                     "minifb/src/x11/X11MiniFB.c",
                 },
@@ -61,9 +83,14 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     translate_c.addIncludePath(b.path("minifb/include"));
+    configureHidApiIncludes(translate_c, os_tag);
 
     const c_module = translate_c.createModule();
     c_module.linkLibrary(minifb);
+
+    const devs_mod = b.createModule(.{ .target = target, .optimize = optimize, .root_source_file = b.path("src/devices.zig") });
+
+    devs_mod.addImport("c", c_module);
 
     // --- Main executable ---
     const mod = b.createModule(.{
@@ -72,6 +99,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     mod.addImport("c", c_module);
+
+    mod.addImport("devices", devs_mod);
+    configureHidApiLink(mod, os_tag);
 
     switch (os_tag) {
         .macos => {

@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("c");
+const devices = @import("devices");
 
 const WIDTH = 1000;
 const HEIGHT = 800;
@@ -40,6 +41,8 @@ const JustDraw = struct {
     shape_init: ?Point = null,
     dirty: bool = true,
     prev_pos: ?Point = null,
+
+    is_pen_connected: bool = false,
 
     buffer: []u32 = undefined,
     overlay_buffer: []u32 = undefined,
@@ -176,11 +179,8 @@ const JustDraw = struct {
 };
 
 pub fn main() !void {
-    const window = c.mfb_open_ex("JUST DRAW", WIDTH, HEIGHT, c.WF_RESIZABLE);
-    if (window == null) return;
-    defer c.mfb_close(window);
-
-    c.mfb_show_cursor(window, false);
+    try devices.initHidApi();
+    defer _ = c.hid_exit();
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -193,6 +193,21 @@ pub fn main() !void {
     const jd = try allocator.create(JustDraw);
     defer allocator.destroy(jd);
     jd.* = try JustDraw.init(allocator);
+
+    const devices_list = try devices.discoverDevices(allocator);
+
+    if (devices.getXPPenDevice(devices_list) catch null) |xppen| {
+       const endpoints = try devices.collectInterruptEndpoints(allocator, &xppen);
+        std.debug.print("{any}", .{endpoints});
+
+        jd.is_pen_connected = true;
+    }
+
+    const window = c.mfb_open_ex("JUST DRAW", WIDTH, HEIGHT, c.WF_RESIZABLE);
+    if (window == null) return;
+    defer c.mfb_close(window);
+
+    c.mfb_show_cursor(window, false);
 
     c.mfb_set_user_data(window, jd);
 
