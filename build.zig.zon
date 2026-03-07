@@ -32,6 +32,10 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
+        .hidder = .{
+            .url = "https://github.com/richardhapb/hidder/archive/refs/heads/main.tar.gz",
+            .hash = "hidder-0.0.0-rcnng5qMAAAOjkAOp4hYed0-NdcR1RLkCnvejkk3Fhu7",
+        },
     },
     .paths = .{
         "build.zig",

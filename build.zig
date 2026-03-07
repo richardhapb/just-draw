@@ -100,7 +100,15 @@ pub fn build(b: *std.Build) void {
     });
     mod.addImport("c", c_module);
 
-    mod.addImport("devices", devs_mod);
+
+    const hidder_dep = b.dependency("hidder", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const hidder_mod = hidder_dep.module("hidder");
+
+    mod.addImport("hidder", hidder_mod);
+
     configureHidApiLink(mod, os_tag);
 
     switch (os_tag) {
