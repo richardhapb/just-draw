@@ -43,8 +43,18 @@ const DigitizerUsage = enum(u16) {
     tip_pressure = 0x30,
     tip_switch = 0x42,
     barrel_switch = 0x44,
-    eraser = 0x45, // Some tablets use this as button 2
+    eraser = 0x45,
     secondary_barrel = 0x5A,
+
+    fn fromInt(usage: u32) !DigitizerUsage {
+        for (@as([5]u32, .{ 0x30, 0x42, 0x44, 0x45, 0x5A })) |num| {
+            if (usage == num) {
+                return @as(DigitizerUsage, @enumFromInt(usage));
+            }
+        }
+
+        return error.InvalidEnum;
+    }
 };
 
 const Mode = enum {
@@ -334,24 +344,27 @@ pub fn main() !void {
             const ptr = &report.field_descriptors[i];
 
             if (desc.usage_page == @intFromEnum(UsagePage.digitizer)) {
-                if (desc.usage == @intFromEnum(DigitizerUsage.tip_switch)) {
-                    std.debug.print("Found: Tip Switch at index {}\n", .{i});
-                    try subs_list.append(allocator, ptr);
-                    try events_map.put(ptr, .tip);
-                } else if (desc.usage == @intFromEnum(DigitizerUsage.barrel_switch)) {
-                    std.debug.print("Found: Barrel Switch at index {}\n", .{i});
-                    try subs_list.append(allocator, ptr);
-                    try events_map.put(ptr, .button1);
-                } else if (desc.usage == @intFromEnum(DigitizerUsage.secondary_barrel) or
-                    desc.usage == @intFromEnum(DigitizerUsage.eraser))
-                {
-                    std.debug.print("Found: Button 2 (eraser/secondary) at index {}\n", .{i});
-                    try subs_list.append(allocator, ptr);
-                    try events_map.put(ptr, .button2);
-                } else if (desc.usage == @intFromEnum(DigitizerUsage.tip_pressure)) {
-                    std.debug.print("Found: Pressure at index {}\n", .{i});
-                    try subs_list.append(allocator, ptr);
-                    try events_map.put(ptr, .pressure);
+                switch (DigitizerUsage.fromInt(desc.usage) catch continue) {
+                    DigitizerUsage.tip_switch => {
+                        std.debug.print("Found: Tip Switch at index {}\n", .{i});
+                        try subs_list.append(allocator, ptr);
+                        try events_map.put(ptr, .tip);
+                    },
+                    DigitizerUsage.barrel_switch => {
+                        std.debug.print("Found: Barrel Switch at index {}\n", .{i});
+                        try subs_list.append(allocator, ptr);
+                        try events_map.put(ptr, .button1);
+                    },
+                    DigitizerUsage.secondary_barrel, DigitizerUsage.eraser => {
+                        std.debug.print("Found: Button 2 (eraser/secondary) at index {}\n", .{i});
+                        try subs_list.append(allocator, ptr);
+                        try events_map.put(ptr, .button2);
+                    },
+                    DigitizerUsage.tip_pressure => {
+                        std.debug.print("Found: Pressure at index {}\n", .{i});
+                        try subs_list.append(allocator, ptr);
+                        try events_map.put(ptr, .pressure);
+                    },
                 }
             } else if (desc.usage_page == @intFromEnum(UsagePage.generic_desktop)) {
                 if (desc.usage == @intFromEnum(GenericDesktopUsage.x)) {
@@ -432,7 +445,20 @@ pub fn main() !void {
                 const event_type = events_map.get(event.descriptor) orelse continue;
                 switch (event_type) {
                     .tip => {
-                        jd.drawing = event.new_value == 1;
+                        const pressed = event.new_value == 1;
+                        jd.drawing = pressed;
+
+                        if (jd.mode != .normal) {
+                            if (!pressed) {
+                                // Commit shapes
+                                jd.commitOverlay();
+                                jd.shape_init = null;
+                            } else if (jd.shape_init == null) {
+                                // Begin shape
+                                jd.shape_init = jd.last_pos;
+                            }
+                        }
+
                         // Apply eraser mode when drawing
                         if (jd.drawing and jd.eraser_mode) {
                             jd.deleting = true;
@@ -570,12 +596,19 @@ fn putPixel(buffer: []u32, x: i32, y: i32, color: u32) void {
     buffer[@intCast(y * WIDTH + x)] = color;
 }
 
-fn keyboardCallback(window: ?*c.mfb_window, key: c.mfb_key, _: c.mfb_key_mod, is_pressed: bool) callconv(.c) void {
-    if (!is_pressed) return;
-
+fn keyboardCallback(window: ?*c.mfb_window, key: c.mfb_key, mod: c.mfb_key_mod, is_pressed: bool) callconv(.c) void {
     const pointer = c.mfb_get_user_data(window) orelse return;
     var jd: *JustDraw = @ptrCast(@alignCast(pointer));
 
+    switch (mod) {
+        c.KB_MOD_SHIFT => jd.mode = .line,
+        c.KB_MOD_SUPER => jd.mode = .square,
+        else => jd.mode = .normal,
+    }
+
+    if (!is_pressed) return;
+
+    // These requires handle is_pressed release
     switch (key) {
         '1' => jd.color = .red,
         '2' => jd.color = .green,
@@ -619,44 +652,27 @@ fn mouseMoveCallback(window: ?*c.mfb_window, x: i32, y: i32) callconv(.c) void {
     jd.setPoint(pos.x, pos.y);
 }
 
-fn mouseButtonCallback(window: ?*c.mfb_window, button: c.mfb_mouse_button, mod: c.mfb_key_mod, is_pressed: bool) callconv(.c) void {
+fn mouseButtonCallback(window: ?*c.mfb_window, button: c.mfb_mouse_button, _: c.mfb_key_mod, is_pressed: bool) callconv(.c) void {
     const pointer = c.mfb_get_user_data(window) orelse return;
     var jd: *JustDraw = @ptrCast(@alignCast(pointer));
 
     switch (button) {
         c.MOUSE_LEFT => {
-            switch (mod) {
-                // With shift draw a square
-                c.KB_MOD_SUPER => {
-                    if (is_pressed) {
-                        jd.mode = .square;
-                        jd.shape_init = jd.last_pos;
-                    } else {
-                        jd.commitOverlay();
-                        jd.mode = .normal;
-                        jd.shape_init = null;
-                    }
-                },
-                c.KB_MOD_SHIFT => {
-                    if (is_pressed) {
-                        jd.mode = .line;
-                        jd.shape_init = jd.last_pos;
-                    } else {
-                        jd.commitOverlay();
-                        jd.mode = .normal;
-                        jd.shape_init = null;
-                    }
-                },
-                else => {},
-            }
-
             jd.drawing = is_pressed;
             if (is_pressed) {
-                if (jd.last_pos) |last_pos| {
+                if (jd.mode != .normal) {
+                    jd.shape_init = jd.last_pos;
+                } else if (jd.last_pos) |last_pos| {
                     // First pixel, this handles the `click` alone event without movement
                     jd.setPoint(last_pos.x, last_pos.y);
                 }
-            } else jd.last_pos = null; // Restart state to avoid join lines when click again
+                jd.last_pos = null; // Restart state to avoid join lines when click again
+            } else {
+                if (jd.mode != .normal) {
+                    jd.commitOverlay();
+                    jd.shape_init = null;
+                }
+            }
         },
         c.MOUSE_RIGHT => {
             jd.deleting = is_pressed;
