@@ -34,7 +34,7 @@
     .dependencies = .{
         .hidder = .{
             .url = "https://github.com/richardhapb/hidder/archive/refs/heads/main.tar.gz",
-            .hash = "hidder-0.0.0-rcnng5qMAAAOjkAOp4hYed0-NdcR1RLkCnvejkk3Fhu7",
+            .hash = "hidder-0.0.0-rcnng8-PAADkZgUaac19xXmmphCeC7fsWBcq-Dop8_pj",
         },
     },
     .paths = .{

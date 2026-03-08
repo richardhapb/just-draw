@@ -305,10 +305,9 @@ pub fn main() !void {
 
     try hidder.initHidApi();
     const devices_list = try hidder.discoverDevices(allocator);
+    defer allocator.free(devices_list);
 
     var watcher: ?hidder.ReportsWatcher = null;
-    var queue = hidder.EventQueue(hidder.FieldEvent).init(allocator);
-    defer queue.deinit();
     var events_map = std.AutoHashMap(*const hidder.FieldDescriptor, PenEvent).init(allocator);
     defer events_map.deinit();
 
@@ -384,7 +383,7 @@ pub fn main() !void {
         const subs = try subs_list.toOwnedSlice(allocator);
 
         if (subs.len > 0) {
-            watcher = hidder.ReportsWatcher.init(allocator, device_ptr, report, subs, &queue);
+            watcher = hidder.ReportsWatcher.init(allocator, device_ptr, report, subs);
             try watcher.?.start();
             jd.is_pen_connected = true;
             std.log.info("XPPen connected: tablet range {}x{}", .{ tablet_x_max, tablet_y_max });
@@ -441,85 +440,47 @@ pub fn main() !void {
 
         // TODO: Detect when pen is disconnected
         if (jd.is_pen_connected) {
-            while (watcher.?.queue.pop()) |event| {
-                const event_type = events_map.get(event.descriptor) orelse continue;
-                switch (event_type) {
-                    .tip => {
-                        const pressed = event.new_value == 1;
-                        jd.drawing = pressed;
+            const first_event = watcher.?.queue.popWait(16_000_000);  // 60fps
+            if (first_event) |fe| {
+                processPenEvent(&events_map, fe, jd, &pen_x, &pen_y, frame_counter) catch continue;
 
-                        if (jd.mode != .normal) {
-                            if (!pressed) {
-                                // Commit shapes
-                                jd.commitOverlay();
-                                jd.shape_init = null;
-                            } else if (jd.shape_init == null) {
-                                // Begin shape
-                                jd.shape_init = jd.last_pos;
-                            }
-                        }
-
-                        // Apply eraser mode when drawing
-                        if (jd.drawing and jd.eraser_mode) {
-                            jd.deleting = true;
-                        } else if (!jd.drawing) {
-                            jd.deleting = false;
-                        }
-                    },
-                    .button1 => {
-                        const pressed = event.new_value == 1;
-                        jd.button1_held = pressed;
-
-                        if (pressed) {
-                            const double_tap_threshold: u64 = 300; // ~300ms at 1ms per frame
-                            if (frame_counter - jd.last_button1_frame < double_tap_threshold) {
-                                // Double tap -> toggle eraser mode
-                                jd.eraser_mode = !jd.eraser_mode;
-                                jd.feedback_text = if (jd.eraser_mode) .eraser_on else .eraser_off;
-                                jd.feedback_frames = 120; // Show for ~120ms
-                            }
-                            jd.last_button1_frame = frame_counter;
-                        }
-                    },
-                    .button2 => {
-                        jd.button2_held = event.new_value == 1;
-                    },
-                    .pressure => jd.mapPressure(event.new_value),
-                    .x => pen_x = event.new_value,
-                    .y => pen_y = event.new_value,
+                // Drain reimaining events
+                while (watcher.?.queue.pop()) |event| {
+                    processPenEvent(&events_map, event, jd, &pen_x, &pen_y, frame_counter) catch continue;
                 }
+
                 jd.dirty = true;
-            }
 
-            // Continuous size adjustment while holding buttons (every 50 frames ~50ms)
-            if (frame_counter % 50 == 0) {
-                if (jd.button1_held) {
-                    jd.base_size = @min(MAX_POINT_SIZE, jd.base_size + 1);
-                    jd.size = jd.base_size;
-                    jd.dirty = true;
-                }
-                if (jd.button2_held) {
-                    jd.base_size = @max(MIN_POINT_SIZE, jd.base_size -| 1);
-                    jd.size = jd.base_size;
-                    jd.dirty = true;
-                }
-            }
-
-            // Update pen position if we got coordinates
-            if (pen_x != null or pen_y != null) {
-                // Convert tablet coordinates to canvas coordinates
-                const x = if (pen_x) |px| @divTrunc(px * WIDTH, tablet_x_max) else if (jd.last_pos) |p| p.x else 0;
-                const y = if (pen_y) |py| @divTrunc(py * HEIGHT, tablet_y_max) else if (jd.last_pos) |p| p.y else 0;
-
-                const pos = Point{ .x = x, .y = y };
-
-                if (jd.drawing or jd.deleting) {
-                    if (jd.last_pos) |last_pos| {
-                        jd.drawLine(last_pos.x, last_pos.y, pos.x, pos.y);
+                // Continuous size adjustment while holding buttons (every 50 frames ~50ms)
+                if (frame_counter % 50 == 0) {
+                    if (jd.button1_held) {
+                        jd.base_size = @min(MAX_POINT_SIZE, jd.base_size + 1);
+                        jd.size = jd.base_size;
+                        jd.dirty = true;
                     }
-                    jd.setPoint(pos.x, pos.y);
+                    if (jd.button2_held) {
+                        jd.base_size = @max(MIN_POINT_SIZE, jd.base_size -| 1);
+                        jd.size = jd.base_size;
+                        jd.dirty = true;
+                    }
                 }
-                jd.last_pos = pos;
+
+                // Update pen position if we got coordinates
+                if (pen_x != null or pen_y != null) {
+                    // Convert tablet coordinates to canvas coordinates
+                    const x = if (pen_x) |px| @divTrunc(px * WIDTH, tablet_x_max) else if (jd.last_pos) |p| p.x else 0;
+                    const y = if (pen_y) |py| @divTrunc(py * HEIGHT, tablet_y_max) else if (jd.last_pos) |p| p.y else 0;
+
+                    const pos = Point{ .x = x, .y = y };
+
+                    if (jd.drawing or jd.deleting) {
+                        if (jd.last_pos) |last_pos| {
+                            jd.drawLine(last_pos.x, last_pos.y, pos.x, pos.y);
+                        }
+                        jd.setPoint(pos.x, pos.y);
+                    }
+                    jd.last_pos = pos;
+                }
             }
         }
 
@@ -557,12 +518,56 @@ pub fn main() !void {
             jd.dirty = false;
             if (c.mfb_update(window, jd.display.ptr) != c.STATE_OK) break;
         }
+    }
+}
 
-        // Small sleep when polling to avoid 100% CPU
-        if (jd.is_pen_connected) {
-            const ts = c.struct_timespec{ .tv_sec = 0, .tv_nsec = 1_000_000 }; // 1ms
-            _ = c.nanosleep(&ts, null);
-        }
+fn processPenEvent(events_map: *std.AutoHashMap(*const hidder.FieldDescriptor, PenEvent), event: hidder.FieldEvent, jd: *JustDraw, pen_x: *?i32, pen_y: *?i32, frame_counter: u64) !void {
+    const event_type = events_map.get(event.descriptor) orelse return error.NoEvent;
+
+    switch (event_type) {
+        .tip => {
+            const pressed = event.new_value == 1;
+            jd.drawing = pressed;
+
+            if (jd.mode != .normal) {
+                if (!pressed) {
+                    // Commit shapes
+                    jd.commitOverlay();
+                    jd.shape_init = null;
+                } else if (jd.shape_init == null) {
+                    // Begin shape
+                    jd.shape_init = jd.last_pos;
+                }
+            }
+
+            // Apply eraser mode when drawing
+            if (jd.drawing and jd.eraser_mode) {
+                jd.deleting = true;
+            } else if (!jd.drawing) {
+                jd.deleting = false;
+            }
+        },
+        .button1 => {
+            const pressed = event.new_value == 1;
+            jd.button1_held = pressed;
+
+            if (pressed) {
+                const double_tap_threshold: u64 = 300; // ~300ms at 1ms per frame
+                if (frame_counter - jd.last_button1_frame < double_tap_threshold) {
+                    // Double tap -> toggle eraser mode
+                    jd.eraser_mode = !jd.eraser_mode;
+                    jd.feedback_text = if (jd.eraser_mode) .eraser_on else .eraser_off;
+                    jd.feedback_frames = 120; // Show for ~120ms
+                }
+                jd.last_button1_frame = frame_counter;
+            }
+        },
+        .button2 => {
+            jd.button2_held = event.new_value == 1;
+        },
+        .pressure => jd.mapPressure(event.new_value),
+        .x => pen_x.* = event.new_value,
+        .y => pen_y.* = event.new_value,
     }
 }
 
