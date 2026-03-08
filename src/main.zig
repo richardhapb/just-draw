@@ -7,6 +7,8 @@ const HEIGHT = 800;
 const MAX_POINT_SIZE = 50;
 const MIN_POINT_SIZE = 2; // Cannot be smaller than 2, otherwise it will crash
 const MAX_PRESSURE: u16 = 8191;
+const FPS60: u64 = 16_000_000;
+const IDLE_FPS: u64 = 500_000_000;
 
 const Color = enum(u32) {
     white = 0x00FFFFFF,
@@ -83,6 +85,8 @@ const JustDraw = struct {
     shape_init: ?Point = null,
     dirty: bool = true,
     prev_pos: ?Point = null,
+    focused: bool = false,
+    fps: u64 = FPS60,  // 60fps
 
     is_pen_connected: bool = false,
     eraser_mode: bool = false,
@@ -440,7 +444,9 @@ pub fn main() !void {
 
         // TODO: Detect when pen is disconnected
         if (jd.is_pen_connected) {
-            const first_event = watcher.?.queue.popWait(16_000_000);  // 60fps
+            const first_event = watcher.?.queue.popWait(jd.fps);
+            // Only works when is focused
+            if (!jd.focused) continue;
             if (first_event) |fe| {
                 processPenEvent(&events_map, fe, jd, &pen_x, &pen_y, frame_counter) catch continue;
 
@@ -705,5 +711,7 @@ fn activeCallback(window: ?*c.mfb_window, is_active: bool) callconv(.c) void {
     const jd: *JustDraw = @ptrCast(@alignCast(pointer));
 
     // update when it is focused
+    jd.focused = is_active;
+    jd.fps = if (is_active) FPS60 else IDLE_FPS;
     jd.dirty = is_active;
 }
