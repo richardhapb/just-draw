@@ -70,6 +70,24 @@ const Point = struct {
     y: i32,
 };
 
+const Step = struct {
+    stroke: std.ArrayList(Point),
+    color: Color,
+    deleting: bool,
+
+    fn init(allocator: std.mem.Allocator, color: Color, deleting: bool) !Step {
+        return .{
+            .stroke = try std.ArrayList(Point).initCapacity(allocator, 1),
+            .color = color,
+            .deleting = deleting,
+        };
+    }
+
+    fn deinit(self: *Step, allocator: std.mem.Allocator) void {
+        self.stroke.deinit(allocator);
+    }
+};
+
 const JustDraw = struct {
     allocator: std.mem.Allocator,
     win_width: u32 = @intCast(WIDTH),
@@ -86,7 +104,10 @@ const JustDraw = struct {
     dirty: bool = true,
     prev_pos: ?Point = null,
     focused: bool = false,
-    fps: u64 = FPS60,  // 60fps
+    fps: u64 = FPS60, // 60fps
+    current_step: ?Step = null,
+    steps: std.ArrayList(Step),
+    forward_steps: std.ArrayList(Step),
 
     is_pen_connected: bool = false,
     eraser_mode: bool = false,
@@ -107,14 +128,42 @@ const JustDraw = struct {
             .buffer = try allocator.alloc(u32, WIDTH * HEIGHT),
             .overlay_buffer = try allocator.alloc(u32, WIDTH * HEIGHT),
             .allocator = allocator,
+            .steps = try std.ArrayList(Step).initCapacity(allocator, 1),
+            .forward_steps = try std.ArrayList(Step).initCapacity(allocator, 1),
         };
     }
 
-    fn setPoint(self: *JustDraw, cx: i32, cy: i32) void {
+    fn deinit(self: *JustDraw) void {
+        for (self.steps.items) |*step| {
+            step.deinit(self.allocator);
+        }
+
+        for (self.forward_steps.items) |*step| {
+            step.deinit(self.allocator);
+        }
+
+        self.steps.deinit(self.allocator);
+    }
+
+    fn drawAndInterpolate(self: *JustDraw, point: Point) void {
+        if (self.last_pos) |last_pos| {
+            self.drawLine(last_pos.x, last_pos.y, point.x, point.y);
+        }
+
+        self.setPoint(point);
+    }
+
+    fn setPoint(self: *JustDraw, point: Point) void {
         const r: i32 = @intCast(self.size / 2);
         var x: i32 = 0;
         var y: i32 = r;
         var d: i32 = 3 - 2 * r;
+        const cx = point.x;
+        const cy = point.y;
+
+        if (self.current_step) |*step| {
+            step.stroke.append(self.allocator, point) catch {};
+        }
 
         while (x <= y) : (x += 1) {
             self.hLine(cx - x, cx + x, cy + y);
@@ -154,12 +203,15 @@ const JustDraw = struct {
         var px = x;
 
         while (px < x + w) : (px += 1) {
-            self.setPoint(px, py);
-            self.setPoint(px, py + h);
+            self.setPoint(Point{
+                .x = px,
+                .y = py,
+            });
+            self.setPoint(Point{ .x = px, .y = py + h });
         }
         while (py < y + h) : (py += 1) {
-            self.setPoint(px - w, py);
-            self.setPoint(px, py);
+            self.setPoint(Point{ .x = px - w, .y = py });
+            self.setPoint(Point{ .x = px, .y = py });
         }
     }
 
@@ -175,7 +227,7 @@ const JustDraw = struct {
         var err = dx + dy;
 
         while (true) {
-            self.setPoint(x, y);
+            self.setPoint(Point{ .x = x, .y = y });
             if (x == x1 and y == y1) break;
             const e2 = 2 * err;
             if (e2 >= dy) {
@@ -282,6 +334,72 @@ const JustDraw = struct {
             }
         }
     }
+
+    fn startStep(self: *JustDraw) !void {
+        self.clean_forward(); // New stroke clears redo history
+        self.current_step = try Step.init(self.allocator, self.color, self.deleting);
+    }
+
+    fn finishStep(self: *JustDraw) !void {
+        if (self.current_step) |step| {
+            try self.steps.append(self.allocator, step);
+
+            self.current_step = null;
+        }
+    }
+
+    fn drawStep(self: *JustDraw, step: *const Step) void {
+        const saved_color = self.color;
+        const saved_deleting = self.deleting;
+        self.color = step.color;
+        self.deleting = step.deleting;
+        for (step.stroke.items) |point| {
+            self.setPoint(point);
+        }
+        self.color = saved_color;
+        self.deleting = saved_deleting;
+    }
+
+    fn replayAllSteps(self: *JustDraw) void {
+        // Replay must always write to buffer regardless of current mode
+        const saved_mode = self.mode;
+        self.mode = .normal;
+        self.redrawCanvas();
+        for (self.steps.items) |*step| {
+            self.drawStep(step);
+        }
+        self.mode = saved_mode;
+        self.dirty = true;
+    }
+
+    fn undo(self: *JustDraw) !void {
+        if (self.steps.items.len > 0) {
+            const step = self.steps.pop();
+            if (step) |s| {
+                try self.forward_steps.append(self.allocator, s);
+                self.replayAllSteps();
+            }
+        }
+    }
+
+    fn redo(self: *JustDraw) !void {
+        if (self.forward_steps.items.len > 0) {
+            const step = self.forward_steps.pop();
+            if (step) |s| {
+                try self.steps.append(self.allocator, s);
+                self.drawStep(&self.steps.items[self.steps.items.len - 1]);
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn clean_forward(self: *JustDraw) void {
+        for (self.forward_steps.items) |*step| {
+            step.deinit(self.allocator);
+        }
+
+        self.forward_steps.clearRetainingCapacity();
+    }
 };
 
 fn drawHLineOnBuffer(buffer: []u32, x0: i32, x1: i32, y: i32, color: u32) void {
@@ -306,6 +424,7 @@ pub fn main() !void {
     const jd = try allocator.create(JustDraw);
     defer allocator.destroy(jd);
     jd.* = try JustDraw.init(allocator);
+    defer jd.deinit();
 
     try hidder.initHidApi();
     const devices_list = try hidder.discoverDevices(allocator);
@@ -477,15 +596,12 @@ pub fn main() !void {
                     const x = if (pen_x) |px| @divTrunc(px * WIDTH, tablet_x_max) else if (jd.last_pos) |p| p.x else 0;
                     const y = if (pen_y) |py| @divTrunc(py * HEIGHT, tablet_y_max) else if (jd.last_pos) |p| p.y else 0;
 
-                    const pos = Point{ .x = x, .y = y };
+                    const point = Point{ .x = x, .y = y };
 
                     if (jd.drawing or jd.deleting) {
-                        if (jd.last_pos) |last_pos| {
-                            jd.drawLine(last_pos.x, last_pos.y, pos.x, pos.y);
-                        }
-                        jd.setPoint(pos.x, pos.y);
+                        jd.drawAndInterpolate(point);
                     }
-                    jd.last_pos = pos;
+                    jd.last_pos = point;
                 }
             }
         }
@@ -503,6 +619,8 @@ pub fn main() !void {
 
                 if (jd.shape_init) |init| {
                     jd.updateOverlay();
+                    // Clear recorded stroke each frame so only the final shape position is saved
+                    if (jd.current_step) |*step| step.stroke.clearRetainingCapacity();
                     switch (jd.mode) {
                         .square => {
                             const init_x = if (init.x < pos.x) init.x else pos.x;
@@ -534,6 +652,11 @@ fn processPenEvent(events_map: *std.AutoHashMap(*const hidder.FieldDescriptor, P
         .tip => {
             const pressed = event.new_value == 1;
             jd.drawing = pressed;
+            if (pressed) {
+                jd.startStep() catch {};
+            } else {
+                jd.finishStep() catch {};
+            }
 
             if (jd.mode != .normal) {
                 if (!pressed) {
@@ -626,6 +749,11 @@ fn keyboardCallback(window: ?*c.mfb_window, key: c.mfb_key, mod: c.mfb_key_mod, 
         '3' => jd.color = .blue,
         '4' => jd.color = .yellow,
         '0' => jd.color = .white,
+        'Z' => if (mod == c.KB_MOD_SUPER | c.KB_MOD_SHIFT) {
+            jd.redo() catch {};
+        } else if (mod == c.KB_MOD_SUPER) {
+            jd.undo() catch {};
+        },
         '=' => { // Same position as `+`
             jd.base_size = @min(MAX_POINT_SIZE, jd.base_size + 2);
             jd.size = jd.base_size;
@@ -646,21 +774,21 @@ fn mouseMoveCallback(window: ?*c.mfb_window, x: i32, y: i32) callconv(.c) void {
     const pointer = c.mfb_get_user_data(window) orelse return;
     var jd: *JustDraw = @ptrCast(@alignCast(pointer));
 
-    const pos = jd.toCanvas(x, y);
+    const point = jd.toCanvas(x, y);
 
     if (!jd.drawing and !jd.deleting) {
         // Just update the position to handle it on next click
-        jd.last_pos = pos;
+        jd.last_pos = point;
         return;
     }
 
     if (jd.last_pos) |last_pos| {
-        jd.drawLine(last_pos.x, last_pos.y, pos.x, pos.y);
+        jd.drawLine(last_pos.x, last_pos.y, point.x, point.y);
     }
 
-    jd.last_pos = pos;
+    jd.last_pos = point;
 
-    jd.setPoint(pos.x, pos.y);
+    jd.setPoint(point);
 }
 
 fn mouseButtonCallback(window: ?*c.mfb_window, button: c.mfb_mouse_button, _: c.mfb_key_mod, is_pressed: bool) callconv(.c) void {
@@ -670,19 +798,22 @@ fn mouseButtonCallback(window: ?*c.mfb_window, button: c.mfb_mouse_button, _: c.
     switch (button) {
         c.MOUSE_LEFT => {
             jd.drawing = is_pressed;
+
             if (is_pressed) {
                 if (jd.mode != .normal) {
                     jd.shape_init = jd.last_pos;
                 } else if (jd.last_pos) |last_pos| {
                     // First pixel, this handles the `click` alone event without movement
-                    jd.setPoint(last_pos.x, last_pos.y);
+                    jd.setPoint(last_pos);
                 }
+                jd.startStep() catch {};
                 jd.last_pos = null; // Restart state to avoid join lines when click again
             } else {
                 if (jd.mode != .normal) {
                     jd.commitOverlay();
                     jd.shape_init = null;
                 }
+                jd.finishStep() catch {};
             }
         },
         c.MOUSE_RIGHT => {
@@ -691,7 +822,7 @@ fn mouseButtonCallback(window: ?*c.mfb_window, button: c.mfb_mouse_button, _: c.
             if (is_pressed) {
                 if (jd.last_pos) |last_pos| {
                     // First pixel, this handles the `click` alone event without movement
-                    jd.setPoint(last_pos.x, last_pos.y);
+                    jd.setPoint(last_pos);
                 }
             } else jd.last_pos = null; // Restart state to avoid join lines when click again
         },
