@@ -117,6 +117,7 @@ pub fn build(b: *std.Build) void {
             mod.linkFramework("Metal", .{});
             mod.linkFramework("MetalKit", .{});
             mod.linkFramework("QuartzCore", .{});
+            mod.addCSourceFiles(.{ .files = &.{"src/menu.m"} });
         },
         .linux => {
             mod.linkSystemLibrary("X11", .{});

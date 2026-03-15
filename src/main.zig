@@ -74,12 +74,25 @@ const Step = struct {
     stroke: std.ArrayList(Point),
     color: Color,
     deleting: bool,
+    size: usize,
+    clear: bool = false,
 
-    fn init(allocator: std.mem.Allocator, color: Color, deleting: bool) !Step {
+    fn init(allocator: std.mem.Allocator, color: Color, deleting: bool, size: usize) !Step {
         return .{
             .stroke = try std.ArrayList(Point).initCapacity(allocator, 1),
             .color = color,
             .deleting = deleting,
+            .size = size,
+        };
+    }
+
+    fn initClear(allocator: std.mem.Allocator) !Step {
+        return .{
+            .stroke = try std.ArrayList(Point).initCapacity(allocator, 0),
+            .color = .white,
+            .deleting = false,
+            .size = 0,
+            .clear = true,
         };
     }
 
@@ -111,7 +124,7 @@ const JustDraw = struct {
 
     is_pen_connected: bool = false,
     eraser_mode: bool = false,
-    last_button1_frame: u64 = 0, // For double-tap detection (frame counter)
+    last_button1_ms: i64 = 0, // For double-tap detection (monotonic ms)
     button1_held: bool = false,
     button2_held: bool = false,
     feedback_frames: u32 = 0, // Frames remaining to show feedback
@@ -337,7 +350,7 @@ const JustDraw = struct {
 
     fn startStep(self: *JustDraw) !void {
         self.clean_forward(); // New stroke clears redo history
-        self.current_step = try Step.init(self.allocator, self.color, self.deleting);
+        self.current_step = try Step.init(self.allocator, self.color, self.deleting, self.size);
     }
 
     fn finishStep(self: *JustDraw) !void {
@@ -349,15 +362,22 @@ const JustDraw = struct {
     }
 
     fn drawStep(self: *JustDraw, step: *const Step) void {
+        if (step.clear) {
+            self.redrawCanvas();
+            return;
+        }
         const saved_color = self.color;
         const saved_deleting = self.deleting;
+        const saved_size = self.size;
         self.color = step.color;
         self.deleting = step.deleting;
+        self.size = step.size;
         for (step.stroke.items) |point| {
             self.setPoint(point);
         }
         self.color = saved_color;
         self.deleting = saved_deleting;
+        self.size = saved_size;
     }
 
     fn replayAllSteps(self: *JustDraw) void {
@@ -411,6 +431,8 @@ fn drawHLineOnBuffer(buffer: []u32, x0: i32, x1: i32, y: i32, color: u32) void {
         buffer[@intCast(y * WIDTH + x)] = color;
     }
 }
+
+extern fn setupMacOSMenu() void;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -520,6 +542,7 @@ pub fn main() !void {
 
     const window = c.mfb_open_ex("JUST DRAW", WIDTH, HEIGHT, c.WF_RESIZABLE);
     if (window == null) return;
+    setupMacOSMenu();
     defer c.mfb_close(window);
 
     c.mfb_show_cursor(window, false);
@@ -536,10 +559,10 @@ pub fn main() !void {
     // Initial render
     _ = c.mfb_update(window, jd.display.ptr);
 
+    var last_resize_ms: i64 = 0;
+
     // Main loop - use polling when pen is connected, blocking otherwise
-    var frame_counter: u64 = 0;
     while (true) {
-        frame_counter +%= 1;
         // When pen is connected, we need to poll for HID events
         // Otherwise block until window event arrives (0% CPU when idle)
         const state = if (jd.is_pen_connected)
@@ -567,28 +590,14 @@ pub fn main() !void {
             // Only works when is focused
             if (!jd.focused) continue;
             if (first_event) |fe| {
-                processPenEvent(&events_map, fe, jd, &pen_x, &pen_y, frame_counter) catch continue;
+                processPenEvent(&events_map, fe, jd, &pen_x, &pen_y) catch continue;
 
                 // Drain reimaining events
                 while (watcher.?.queue.pop()) |event| {
-                    processPenEvent(&events_map, event, jd, &pen_x, &pen_y, frame_counter) catch continue;
+                    processPenEvent(&events_map, event, jd, &pen_x, &pen_y) catch continue;
                 }
 
                 jd.dirty = true;
-
-                // Continuous size adjustment while holding buttons (every 50 frames ~50ms)
-                if (frame_counter % 50 == 0) {
-                    if (jd.button1_held) {
-                        jd.base_size = @min(MAX_POINT_SIZE, jd.base_size + 1);
-                        jd.size = jd.base_size;
-                        jd.dirty = true;
-                    }
-                    if (jd.button2_held) {
-                        jd.base_size = @max(MIN_POINT_SIZE, jd.base_size -| 1);
-                        jd.size = jd.base_size;
-                        jd.dirty = true;
-                    }
-                }
 
                 // Update pen position if we got coordinates
                 if (pen_x != null or pen_y != null) {
@@ -602,6 +611,26 @@ pub fn main() !void {
                         jd.drawAndInterpolate(point);
                     }
                     jd.last_pos = point;
+                }
+            }
+
+            // Continuous size adjustment while holding buttons, throttled to ~50ms
+            if (jd.button1_held or jd.button2_held) {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(.MONOTONIC, &ts);
+                const now_ms: i64 = ts.sec * 1000 + @divTrunc(ts.nsec, std.time.ns_per_ms);
+                if (now_ms - last_resize_ms >= 50) {
+                    last_resize_ms = now_ms;
+                    if (jd.button1_held) {
+                        jd.base_size = @min(MAX_POINT_SIZE, jd.base_size + 1);
+                        jd.size = jd.base_size;
+                        jd.dirty = true;
+                    }
+                    if (jd.button2_held) {
+                        jd.base_size = @max(MIN_POINT_SIZE, jd.base_size -| 1);
+                        jd.size = jd.base_size;
+                        jd.dirty = true;
+                    }
                 }
             }
         }
@@ -645,7 +674,7 @@ pub fn main() !void {
     }
 }
 
-fn processPenEvent(events_map: *std.AutoHashMap(*const hidder.FieldDescriptor, PenEvent), event: hidder.FieldEvent, jd: *JustDraw, pen_x: *?i32, pen_y: *?i32, frame_counter: u64) !void {
+fn processPenEvent(events_map: *std.AutoHashMap(*const hidder.FieldDescriptor, PenEvent), event: hidder.FieldEvent, jd: *JustDraw, pen_x: *?i32, pen_y: *?i32) !void {
     const event_type = events_map.get(event.descriptor) orelse return error.NoEvent;
 
     switch (event_type) {
@@ -681,14 +710,17 @@ fn processPenEvent(events_map: *std.AutoHashMap(*const hidder.FieldDescriptor, P
             jd.button1_held = pressed;
 
             if (pressed) {
-                const double_tap_threshold: u64 = 300; // ~300ms at 1ms per frame
-                if (frame_counter - jd.last_button1_frame < double_tap_threshold) {
-                    // Double tap -> toggle eraser mode
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(.MONOTONIC, &ts);
+                const now_ms: i64 = ts.sec * 1000 + @divTrunc(ts.nsec, std.time.ns_per_ms);
+                if (now_ms - jd.last_button1_ms < 400) {
                     jd.eraser_mode = !jd.eraser_mode;
                     jd.feedback_text = if (jd.eraser_mode) .eraser_on else .eraser_off;
-                    jd.feedback_frames = 120; // Show for ~120ms
+                    jd.feedback_frames = 120;
+                    jd.last_button1_ms = 0; // reset so triple-tap doesn't re-toggle
+                } else {
+                    jd.last_button1_ms = now_ms;
                 }
-                jd.last_button1_frame = frame_counter;
             }
         },
         .button2 => {
@@ -762,7 +794,12 @@ fn keyboardCallback(window: ?*c.mfb_window, key: c.mfb_key, mod: c.mfb_key_mod, 
             jd.base_size = @max(MIN_POINT_SIZE, jd.base_size - 2);
             jd.size = jd.base_size;
         },
-        c.KB_KEY_BACKSPACE => jd.redrawCanvas(),
+        c.KB_KEY_BACKSPACE => {
+            jd.clean_forward();
+            const step = Step.initClear(jd.allocator) catch return;
+            jd.steps.append(jd.allocator, step) catch return;
+            jd.redrawCanvas();
+        },
         else => return,
     }
 
