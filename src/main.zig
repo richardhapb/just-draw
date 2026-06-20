@@ -434,12 +434,8 @@ fn drawHLineOnBuffer(buffer: []u32, x0: i32, x1: i32, y: i32, color: u32) void {
 
 extern fn setupMacOSMenu() void;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const gpalloc = gpa.allocator();
-
-    var arena = std.heap.ArenaAllocator.init(gpalloc);
+pub fn main(init: std.process.Init) !void {
+    var arena = init.arena;
     const allocator = arena.allocator();
     defer _ = arena.deinit();
 
@@ -646,21 +642,21 @@ pub fn main() !void {
                 drawCursor(jd.display, pos.x, pos.y, jd.size, @intFromEnum(jd.color));
                 jd.prev_pos = pos;
 
-                if (jd.shape_init) |init| {
+                if (jd.shape_init) |in| {
                     jd.updateOverlay();
                     // Clear recorded stroke each frame so only the final shape position is saved
                     if (jd.current_step) |*step| step.stroke.clearRetainingCapacity();
                     switch (jd.mode) {
                         .square => {
-                            const init_x = if (init.x < pos.x) init.x else pos.x;
-                            const init_y = if (init.y < pos.y) init.y else pos.y;
+                            const init_x = if (in.x < pos.x) in.x else pos.x;
+                            const init_y = if (in.y < pos.y) in.y else pos.y;
 
-                            const width: i32 = @intCast(@abs(pos.x - init.x));
-                            const height: i32 = @intCast(@abs(pos.y - init.y));
+                            const width: i32 = @intCast(@abs(pos.x - in.x));
+                            const height: i32 = @intCast(@abs(pos.y - in.y));
 
                             jd.drawRect(init_x, init_y, width, height);
                         },
-                        .line => jd.drawLine(init.x, init.y, pos.x, pos.y),
+                        .line => jd.drawLine(in.x, in.y, pos.x, pos.y),
                         else => {},
                     }
                     jd.dirty = false;
